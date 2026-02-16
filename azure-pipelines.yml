@@ -1,0 +1,156 @@
+resources:
+  repositories:
+    - repository: cynlr_conan
+      type: git
+      name: CynLr_Software/cynlr_conan
+
+trigger:
+  - main
+  - develop
+  - feature/*
+
+pr:
+  - main
+  - develop
+
+jobs:
+- job: Build
+  timeoutInMinutes: 300
+  strategy:
+    matrix:
+      Linux_Debug:
+        vmImage: 'ubuntu-latest'
+        buildType: Debug
+        profileName: 'linux-gcc'
+      Linux_Release:
+        vmImage: 'ubuntu-latest'
+        buildType: Release
+        profileName: 'linux-gcc'
+      Windows_Debug_MD:
+        vmImage: 'windows-latest'
+        buildType: Debug
+        profileName: 'windows-msvc-md-debug'
+      Windows_Release_MD:
+        vmImage: 'windows-latest'
+        buildType: Release
+        profileName: 'windows-msvc-md-release'
+      Windows_Debug_MT:
+        vmImage: 'windows-latest'
+        buildType: Debug
+        profileName: 'windows-msvc-mt-debug'
+      Windows_Release_MT:
+        vmImage: 'windows-latest'
+        buildType: Release
+        profileName: 'windows-msvc-mt-release'
+    maxParallel: 6
+
+  pool:
+    vmImage: $(vmImage)
+
+  variables:
+    CONAN_V2_MODE: 1
+
+  steps:
+    # Checkout current repository (cynlr_camera) at root
+    - checkout: self
+      path: s/cynlr_camera
+      displayName: 'Checkout cynlr_camera'
+
+    # Checkout cynlr_conan repo for Conan profiles  
+    - checkout: cynlr_conan
+      displayName: 'Checkout cynlr_conan profiles'
+      path: s/cynlr_conan
+      condition: succeeded()
+      fetchDepth: 1
+      sparseCheckoutDirectories: config
+
+    # Install Python and dependencies on all platforms
+    - task: UsePythonVersion@0
+      inputs:
+        versionSpec: '3.12'
+      displayName: 'Use Python 3.12'
+
+    # Install CMake
+    - task: CMake@1
+      inputs:
+        cwd: '$(Build.SourcesDirectory)'
+        cmake: 'cmake'
+      displayName: 'Ensure CMake is available'
+
+    # Install Conan
+    - script: |
+        python -m pip install --upgrade pip
+        pip install conan==2.24.0
+        conan --version
+      displayName: 'Install Conan'
+
+    # Install Conan config (profiles, remotes, etc.) from cynlr_conan repo
+    - script: |
+        conan config install "$(Build.SourcesDirectory)/s/cynlr_conan/config"
+        conan profile list
+      displayName: 'Install Conan config and profiles'
+      condition: succeeded()
+
+    # Configure Conan Remote
+    - script: |
+        conan remote remove cynlr || true
+        conan remote add cynlr http://74.225.34.207:9300
+        conan remote login cynlr demo -p demo
+        conan remote list
+      displayName: 'Configure Conan Remote'
+      condition: succeeded()
+
+    # Set CONAN_CHANNEL variable based on branch
+    - task: PowerShell@2
+      inputs:
+        targetType: 'inline'
+        script: |
+          $branch = "$(Build.SourceBranchName)"
+          if ($branch -eq "main") {
+              Write-Host "##vso[task.setvariable variable=CONAN_CHANNEL]stable"
+              Write-Host "Selected Channel: main"
+          } else {
+              Write-Host "##vso[task.setvariable variable=CONAN_CHANNEL]dev"
+              Write-Host "Selected Channel: dev"
+          }
+      displayName: 'Determine Conan Channel'
+      condition: succeeded()
+
+    # Create and Upload Package - Windows
+    - task: PowerShell@2
+      displayName: 'Conan Create & Upload (Windows)'
+      condition: eq(variables['Agent.OS'], 'Windows_NT')
+      inputs:
+        targetType: 'inline'
+        script: |
+          $ErrorActionPreference = 'Stop'
+          $json = conan inspect . -f json | ConvertFrom-Json
+          $version = $json.version
+          Write-Host "Detected version: $version"
+          $profilePath = "$(Build.SourcesDirectory)\cynlr_conan\config\profiles\$(profileName)"
+          Write-Host "Using profile: $profilePath"
+          Write-Host "Creating package for channel: $(CONAN_CHANNEL)"
+          conan create . --user=cynlr --channel=$(CONAN_CHANNEL) --build=missing -s:a build_type=$(buildType) --profile:build=$profilePath --profile:host=$profilePath -c tools.build:skip_test=False
+          conan upload "cynlr_camera/$version@cynlr/$(CONAN_CHANNEL)#*:*" -r cynlr --confirm --force
+          conan upload "*" -r cynlr --confirm
+        workingDirectory: '$(Build.SourcesDirectory)/cynlr_camera'
+      continueOnError: false
+
+    # Create and Upload Package - Linux
+    - script: |
+        set -e
+        VERSION=$(conan inspect . -f json | jq -r .version)
+        PROFILE_PATH="$(Build.SourcesDirectory)/cynlr_conan/config/profiles/linux-gcc"
+        echo "Creating package version $VERSION for channel: $(CONAN_CHANNEL)"
+        conan create . --user=cynlr --channel=$(CONAN_CHANNEL) --build=missing --build="glib/*" -s:a build_type=$(buildType) --profile:build=$PROFILE_PATH --profile:host=$PROFILE_PATH -c tools.build:skip_test=False -c tools.system.package_manager:mode=install -c tools.system.package_manager:sudo=True
+        conan upload "cynlr_camera/$VERSION@cynlr/$(CONAN_CHANNEL)#*:*" -r cynlr --confirm --force
+        conan upload "*" -r cynlr --confirm
+      displayName: 'Conan Create & Upload (Linux)'
+      workingDirectory: '$(Build.SourcesDirectory)/cynlr_camera'
+      condition: ne(variables['Agent.OS'], 'Windows_NT')
+
+    # Summary
+    - script: |
+        echo "Build and Upload completed for $(Agent.OS) $(buildType)"
+      displayName: 'Build summary'
+      condition: always()
