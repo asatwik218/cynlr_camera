@@ -25,7 +25,8 @@ public:
     virtual optional<CamError> setFrameRate(double framerate) = 0;
 
     virtual optional<CamError> enableLensPower(bool enable) = 0;
-    virtual optional<CamError> setupLensSerial() = 0;
+    virtual optional<CamError> setupLensSerial(
+        const char* line, const char* source, const char* baudRate) = 0;
     virtual optional<CamError> setLensFocus(double voltage) = 0;
 
     virtual shared_ptr<IStream> getStream() = 0;

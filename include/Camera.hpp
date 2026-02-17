@@ -42,7 +42,8 @@ public:
     optional<CamError> setExposureTime(double exposure_time_us);
     optional<CamError> setFrameRate(double framerate);
     optional<CamError> enableLensPower(bool enable);
-    optional<CamError> setupLensSerial();
+    optional<CamError> setupLensSerial(
+        const char* line, const char* source, const char* baudRate);
     optional<CamError> setLensFocus(double voltage);
     optional<StreamError> borrowOldestFrame(FrameBuffer &frame);
     optional<StreamError> borrowNewestFrame(FrameBuffer &frame);

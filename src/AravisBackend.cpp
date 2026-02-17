@@ -136,22 +136,23 @@ optional<CamError> AravisBackend::enableLensPower(bool enable) {
     return nullopt;
 }
 
-optional<CamError> AravisBackend::setupLensSerial() {
+optional<CamError> AravisBackend::setupLensSerial(
+    const char* line, const char* source, const char* baudRate) {
     ArvDevice *device = arv_camera_get_device(camera);
     GError *err = NULL;
 
-    // Select Line1, set as output, source from SerialPort0 Tx
-    arv_device_set_string_feature_value(device, "LineSelector", "Line1", &err);
+    // Select line, set as output, source from serial port Tx
+    arv_device_set_string_feature_value(device, "LineSelector", line, &err);
     ARV_CHECK_ERROR(err);
 
     arv_device_set_string_feature_value(device, "LineMode", "Output", &err);
     ARV_CHECK_ERROR(err);
 
-    arv_device_set_string_feature_value(device, "LineSource", "SerialPort0_Tx", &err);
+    arv_device_set_string_feature_value(device, "LineSource", source, &err);
     ARV_CHECK_ERROR(err);
 
-    // Set baud rate to 57600
-    arv_device_set_string_feature_value(device, "SerialPortBaudRate", "Baud57600", &err);
+    // Set baud rate
+    arv_device_set_string_feature_value(device, "SerialPortBaudRate", baudRate, &err);
     ARV_CHECK_ERROR(err);
 
     return nullopt;
@@ -199,6 +200,13 @@ optional<CamError> AravisBackend::writeSerialFileAccess(const void* data, size_t
     arv_device_execute_command(device, "FileOperationExecute", &err);
     ARV_CHECK_ERROR(err);
 
+    // Set offset and length
+    arv_device_set_integer_feature_value(device, "FileAccessOffset", 0, &err);
+    ARV_CHECK_ERROR(err);
+
+    arv_device_set_integer_feature_value(device, "FileAccessLength", (gint64)length, &err);
+    ARV_CHECK_ERROR(err);
+
     // Write data into the FileAccessBuffer register node
     ArvGc *genicam = arv_device_get_genicam(device);
     ArvGcNode *buffer_node = arv_gc_get_node(genicam, "FileAccessBuffer");
@@ -208,15 +216,22 @@ optional<CamError> AravisBackend::writeSerialFileAccess(const void* data, size_t
     arv_gc_register_set(ARV_GC_REGISTER(buffer_node), data, length, &err);
     ARV_CHECK_ERROR(err);
 
-    arv_device_set_integer_feature_value(device, "FileAccessLength", (gint64)length, &err);
-    ARV_CHECK_ERROR(err);
-
     // Execute write
     arv_device_set_string_feature_value(device, "FileOperationSelector", "Write", &err);
     ARV_CHECK_ERROR(err);
 
     arv_device_execute_command(device, "FileOperationExecute", &err);
     ARV_CHECK_ERROR(err);
+
+    // Check operation status
+    const char* status = arv_device_get_string_feature_value(device, "FileOperationStatus", &err);
+    if (err != NULL) {
+        g_clear_error(&err);  // FileOperationStatus may not exist — non-fatal
+    } else if (status != NULL && strcmp(status, "Success") != 0) {
+        char msg[128];
+        snprintf(msg, sizeof(msg), "FileOperationStatus: %s", status);
+        return CamError { .message = msg };
+    }
 
     // Close
     arv_device_set_string_feature_value(device, "FileOperationSelector", "Close", &err);

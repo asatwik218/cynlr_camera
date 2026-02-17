@@ -43,8 +43,9 @@ optional<CamError> Camera::enableLensPower(bool enable) {
     return m_backend->enableLensPower(enable);
 }
 
-optional<CamError> Camera::setupLensSerial() {
-    return m_backend->setupLensSerial();
+optional<CamError> Camera::setupLensSerial(
+    const char* line, const char* source, const char* baudRate) {
+    return m_backend->setupLensSerial(line, source, baudRate);
 }
 
 optional<CamError> Camera::setLensFocus(double voltage) {
