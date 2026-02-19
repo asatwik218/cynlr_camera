@@ -1,6 +1,8 @@
 #pragma once
 
 #include <memory>
+#include <string>
+#include <vector>
 #include <unordered_map>
 
 extern "C" {
@@ -39,6 +41,8 @@ public:
         const char* name,
         uint32_t stream_buffer_count = DEFAULT_NUM_BUFFERS);
 
+    static std::vector<std::string> listCameras();
+
     optional<CamError> startAcquisition() override;
     optional<CamError> stopAcquisition() override;
     optional<CamError> setAcquisitionMode(AcquisitionMode mode) override;
@@ -68,6 +72,7 @@ private:
     shared_ptr<AravisStream> stream;
     uint32_t stream_buffer_count;
     GError *error = NULL;
+    bool serial_port_open = false;
 };
 
 }  // namespace camera

@@ -1,6 +1,8 @@
 #include <memory>
 #include <algorithm>
 #include <cstdint>
+#include <cstring>
+#include <iostream>
 
 #include "AravisBackend.hpp"
 
@@ -28,6 +30,17 @@ namespace camera {
 
 using namespace std;
 
+std::vector<std::string> AravisBackend::listCameras() {
+    arv_update_device_list();
+    unsigned int n = arv_get_n_devices();
+    std::vector<std::string> names;
+    names.reserve(n);
+    for (unsigned int i = 0; i < n; i++) {
+        names.emplace_back(arv_get_device_id(i));
+    }
+    return names;
+}
+
 unique_ptr<AravisBackend> AravisBackend::create(
     const char* name,
     uint32_t stream_buffer_count)
@@ -54,6 +67,14 @@ unique_ptr<AravisBackend> AravisBackend::create(
 }
 
 AravisBackend::~AravisBackend() {
+    if (serial_port_open) {
+        ArvDevice *device = arv_camera_get_device(camera);
+        GError *err = NULL;
+        arv_device_set_string_feature_value(device, "FileSelector", "SerialPort0", &err);
+        arv_device_set_string_feature_value(device, "FileOperationSelector", "Close", &err);
+        arv_device_execute_command(device, "FileOperationExecute", &err);
+        if (err) g_clear_error(&err);
+    }
     g_clear_object(&camera);
 }
 
@@ -61,7 +82,7 @@ optional<CamError> AravisBackend::startAcquisition() {
     size_t payload = arv_camera_get_payload(camera, &error);
 
     // Insert some buffers in the stream buffer pool
-    for (int i = 0; i < stream_buffer_count; i++) {
+    for (uint32_t i = 0; i < stream_buffer_count; i++) {
         arv_stream_push_buffer(stream->m_stream, arv_buffer_new(payload, NULL));
     }
 
@@ -114,25 +135,11 @@ optional<CamError> AravisBackend::enableLensPower(bool enable) {
 
     // Try direct V3_3Enable node first
     ArvGcNode *v33node = arv_device_get_feature(device, "V3_3Enable");
-    if (v33node != NULL) {
-        arv_device_set_boolean_feature_value(device, "V3_3Enable", enable, &err);
-        ARV_CHECK_ERROR(err);
-        return nullopt;
+    if (v33node == NULL) {
+        return CamError { .message = "V3_3Enable feature not found" };
     }
-
-    // Fallback: configure Line2 as output sourced from UserOutput1
-    arv_device_set_string_feature_value(device, "LineSelector", "Line2", &err);
+    arv_device_set_boolean_feature_value(device, "V3_3Enable", enable, &err);
     ARV_CHECK_ERROR(err);
-
-    arv_device_set_string_feature_value(device, "LineMode", "Output", &err);
-    ARV_CHECK_ERROR(err);
-
-    arv_device_set_string_feature_value(device, "LineSource", "UserOutput1", &err);
-    ARV_CHECK_ERROR(err);
-
-    arv_device_set_boolean_feature_value(device, "UserOutputValue", enable, &err);
-    ARV_CHECK_ERROR(err);
-
     return nullopt;
 }
 
@@ -140,12 +147,10 @@ optional<CamError> AravisBackend::setupLensSerial(const char* baudRate) {
     ArvDevice *device = arv_camera_get_device(camera);
     GError *err = NULL;
 
-    // Line0: Input, source from SerialPort0 (Rx)
+    // Line0: Input (Rx) — LineSource not applicable for input lines
     arv_device_set_string_feature_value(device, "LineSelector", "Line0", &err);
     ARV_CHECK_ERROR(err);
     arv_device_set_string_feature_value(device, "LineMode", "Input", &err);
-    ARV_CHECK_ERROR(err);
-    arv_device_set_string_feature_value(device, "LineSource", "SerialPort0", &err);
     ARV_CHECK_ERROR(err);
 
     // Line1: Output, source from SerialPort0 (Tx)
@@ -165,6 +170,20 @@ optional<CamError> AravisBackend::setupLensSerial(const char* baudRate) {
     // Set baud rate
     arv_device_set_string_feature_value(device, "SerialPortBaudRate", baudRate, &err);
     ARV_CHECK_ERROR(err);
+
+    // Select SerialPort0 as the file for file access operations
+    arv_device_set_string_feature_value(device, "FileSelector", "SerialPort0", &err);
+    ARV_CHECK_ERROR(err);
+
+    // Open the serial port for writing
+    arv_device_set_string_feature_value(device, "FileOpenMode", "Write", &err);
+    ARV_CHECK_ERROR(err);
+    arv_device_set_string_feature_value(device, "FileOperationSelector", "Open", &err);
+    ARV_CHECK_ERROR(err);
+    arv_device_execute_command(device, "FileOperationExecute", &err);
+    ARV_CHECK_ERROR(err);
+    printf("  [serial] SerialPort0 opened for Write\n");
+    serial_port_open = true;
 
     return nullopt;
 }
@@ -197,59 +216,51 @@ optional<CamError> AravisBackend::writeSerialFileAccess(const void* data, size_t
     ArvDevice *device = arv_camera_get_device(camera);
     GError *err = NULL;
 
-    // Select the serial port file
+    const uint8_t* bytes = static_cast<const uint8_t*>(data);
+    printf("  [serial] write len=%zu data=", length);
+    for (size_t i = 0; i < length; i++) printf("%02X", bytes[i]);
+    printf("\n");
+
+    // Ensure FileSelector points to SerialPort0 (may have changed since setupLensSerial)
     arv_device_set_string_feature_value(device, "FileSelector", "SerialPort0", &err);
     ARV_CHECK_ERROR(err);
 
-    arv_device_set_string_feature_value(device, "FileOpenMode", "Write", &err);
-    ARV_CHECK_ERROR(err);
-
-    // Open
-    arv_device_set_string_feature_value(device, "FileOperationSelector", "Open", &err);
-    ARV_CHECK_ERROR(err);
-
-    arv_device_execute_command(device, "FileOperationExecute", &err);
-    ARV_CHECK_ERROR(err);
-
-    // Set offset and length
+    // FileAccessOffset = 0
     arv_device_set_integer_feature_value(device, "FileAccessOffset", 0, &err);
     ARV_CHECK_ERROR(err);
 
+    // FileAccessLength
     arv_device_set_integer_feature_value(device, "FileAccessLength", (gint64)length, &err);
     ARV_CHECK_ERROR(err);
+    printf("  [serial] FileAccessLength=%zu OK\n", length);
 
-    // Write data into the FileAccessBuffer register node
+    // FileOperationSelector = "Write" (must be BEFORE writing FileAccessBuffer)
+    arv_device_set_string_feature_value(device, "FileOperationSelector", "Write", &err);
+    ARV_CHECK_ERROR(err);
+
+    // FileAccessBuffer — write directly at physical address
     ArvGc *genicam = arv_device_get_genicam(device);
     ArvGcNode *buffer_node = arv_gc_get_node(genicam, "FileAccessBuffer");
     if (buffer_node == NULL) {
         return CamError { .message = "FileAccessBuffer node not found" };
     }
-    arv_gc_register_set(ARV_GC_REGISTER(buffer_node), data, length, &err);
+
+    GError *addr_err = NULL;
+    guint64 reg_addr = arv_gc_register_get_address(ARV_GC_REGISTER(buffer_node), &addr_err);
+    arv_device_write_memory(device, reg_addr, (guint32)length, const_cast<void*>(data), &err);
     ARV_CHECK_ERROR(err);
 
-    // Execute write
-    arv_device_set_string_feature_value(device, "FileOperationSelector", "Write", &err);
-    ARV_CHECK_ERROR(err);
+    printf("  [serial] FileAccessBuffer OK\n");
 
+    // FileOperationExecute
     arv_device_execute_command(device, "FileOperationExecute", &err);
     ARV_CHECK_ERROR(err);
-
-    // Check operation status
-    const char* status = arv_device_get_string_feature_value(device, "FileOperationStatus", &err);
+    gint64 result = arv_device_get_integer_feature_value(device, "FileOperationResult", &err);
     if (err != NULL) {
-        g_clear_error(&err);  // FileOperationStatus may not exist — non-fatal
-    } else if (status != NULL && strcmp(status, "Success") != 0) {
-        char msg[128];
-        snprintf(msg, sizeof(msg), "FileOperationStatus: %s", status);
-        return CamError { .message = msg };
+        g_clear_error(&err);
+    } else {
+        printf("  [serial] FileOperationExecute OK, result=%lld bytes\n", (long long)result);
     }
-
-    // Close
-    arv_device_set_string_feature_value(device, "FileOperationSelector", "Close", &err);
-    ARV_CHECK_ERROR(err);
-
-    arv_device_execute_command(device, "FileOperationExecute", &err);
-    ARV_CHECK_ERROR(err);
 
     return nullopt;
 }
