@@ -50,8 +50,7 @@ public:
     optional<CamError> setFrameRate(double framerate) override;
 
     optional<CamError> enableLensPower(bool enable) override;
-    optional<CamError> setupLensSerial(
-        const char* line, const char* source, const char* baudRate) override;
+    optional<CamError> setupLensSerial(const char* baudRate) override;
     optional<CamError> setLensFocus(double voltage) override;
 
     shared_ptr<IStream> getStream() override;

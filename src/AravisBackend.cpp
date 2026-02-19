@@ -136,19 +136,30 @@ optional<CamError> AravisBackend::enableLensPower(bool enable) {
     return nullopt;
 }
 
-optional<CamError> AravisBackend::setupLensSerial(
-    const char* line, const char* source, const char* baudRate) {
+optional<CamError> AravisBackend::setupLensSerial(const char* baudRate) {
     ArvDevice *device = arv_camera_get_device(camera);
     GError *err = NULL;
 
-    // Select line, set as output, source from serial port Tx
-    arv_device_set_string_feature_value(device, "LineSelector", line, &err);
+    // Line0: Input, source from SerialPort0 (Rx)
+    arv_device_set_string_feature_value(device, "LineSelector", "Line0", &err);
+    ARV_CHECK_ERROR(err);
+    arv_device_set_string_feature_value(device, "LineMode", "Input", &err);
+    ARV_CHECK_ERROR(err);
+    arv_device_set_string_feature_value(device, "LineSource", "SerialPort0", &err);
     ARV_CHECK_ERROR(err);
 
+    // Line1: Output, source from SerialPort0 (Tx)
+    arv_device_set_string_feature_value(device, "LineSelector", "Line1", &err);
+    ARV_CHECK_ERROR(err);
     arv_device_set_string_feature_value(device, "LineMode", "Output", &err);
     ARV_CHECK_ERROR(err);
+    arv_device_set_string_feature_value(device, "LineSource", "SerialPort0", &err);
+    ARV_CHECK_ERROR(err);
 
-    arv_device_set_string_feature_value(device, "LineSource", source, &err);
+    // SerialPort0 source from Line0
+    arv_device_set_string_feature_value(device, "SerialPortSelector", "SerialPort0", &err);
+    ARV_CHECK_ERROR(err);
+    arv_device_set_string_feature_value(device, "SerialPortSource", "Line0", &err);
     ARV_CHECK_ERROR(err);
 
     // Set baud rate
